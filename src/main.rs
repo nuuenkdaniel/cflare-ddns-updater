@@ -1,12 +1,14 @@
 use reqwest::Client;
 use serde::Deserialize;
+use dotenv::dotenv;
+
 use std::error::Error;
+use std::env;
 
 #[derive(Deserialize)]
 struct IpResp {
     ip: String,
 }
-
 
 async fn get_pub_ip() -> Result<(), Box<dyn Error>> {
     // Get public ip
@@ -103,7 +105,10 @@ async fn get_cflare_ip(record_name: &str, bearer: &str) -> Result<String, Box<dy
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    dotenv().ok();
+    let api_key: String = env::var("CFLARE_API_KEY").expect("CFLARE_API_KEY not found");
+    let record_name: String = env::var("DOMAIN_RECORD").expect("DOMAIN_RECORD not found");
     get_pub_ip().await?;
-    get_cflare_ip("", "").await?;
+    get_cflare_ip(&record_name, &api_key).await?;
     Ok(())
 }
