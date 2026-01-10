@@ -39,8 +39,7 @@ struct ZoneInfoResult {
     // status: String,
 }
 
-async fn get_zone_id(record_name: &str, bearer: &str) -> Result<String, Box<dyn Error>> {
-    let client = Client::new();
+async fn get_zone_id(record_name: &str, bearer: &str, client: Client) -> Result<String, Box<dyn Error>> {
     let url: String = format!("https://api.cloudflare.com/client/v4/zones/");
     let zone_info = client
         .get(url)
@@ -49,6 +48,7 @@ async fn get_zone_id(record_name: &str, bearer: &str) -> Result<String, Box<dyn 
         .await?
         .json::<ZoneInfo>()
         .await?;
+
     if zone_info.success == true {
         let mut split_domain: Vec<&str> = record_name.split('.').collect();
         let tld = split_domain.pop().unwrap_or("");
@@ -78,9 +78,8 @@ struct RecordResult {
     content: String,
 }
 
-async fn get_cflare_ip(zone_id: &str, record_name: &str, bearer: &str) -> Result<(String, String), Box<dyn Error>> {
+async fn get_cflare_ip(zone_id: &str, record_name: &str, bearer: &str, client: Client) -> Result<(String, String), Box<dyn Error>> {
     println!("\nGetting current ip for {} from cloudflare...", record_name);
-    let client = Client::new();
     let url: String = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
     let record_info = client
         .get(url)
@@ -100,8 +99,7 @@ async fn get_cflare_ip(zone_id: &str, record_name: &str, bearer: &str) -> Result
     Ok(("".to_string(), "".to_string()))
 }
 
-async fn update_cflare_ip(zone_id: &str, record_id: &str, new_ip: &str, bearer: &str) -> Result<(), Box<dyn Error>> {
-    let client = Client::new();
+async fn update_cflare_ip(zone_id: &str, record_id: &str, new_ip: &str, bearer: &str, client: Client) -> Result<(), Box<dyn Error>> {
     let url: String = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}", zone_id, record_id);
     client.patch(url)
         .header("Content-Type", "application/json")
@@ -109,12 +107,12 @@ async fn update_cflare_ip(zone_id: &str, record_id: &str, new_ip: &str, bearer: 
         .json(&json!({
             "content": new_ip
         }))
-    .send()
+        .send()
         .await?;
     Ok(())
 }
 
-// TODO: Reuse client instead of opening new client everytime
+// TODO: Better error handling
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Load env vars
@@ -123,9 +121,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let record_name: String = env::var("DOMAIN_RECORD").expect("DOMAIN_RECORD not found");
 
     // Get record info
+    let client = Client::new();
     let public_ip: String = get_pub_ip().await?;
-    let zone_id = get_zone_id(&record_name, &api_key).await?;
-    let cflare_record: (String, String) = get_cflare_ip(&zone_id, &record_name, &api_key).await?;
+    let zone_id = get_zone_id(&record_name, &api_key, client.clone()).await?;
+    let cflare_record: (String, String) = get_cflare_ip(&zone_id, &record_name, &api_key, client.clone()).await?;
     let cflare_id: String = cflare_record.0;
     let cflare_ip: String = cflare_record.1;
     println!("Record ID: {}", cflare_id);
@@ -133,12 +132,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Check for change and update
     if public_ip != cflare_ip {
         println!("Updating ip for {}...", record_name);
-        update_cflare_ip(&zone_id, &cflare_id, &public_ip, &api_key).await?;
+        update_cflare_ip(&zone_id, &cflare_id, &public_ip, &api_key, client.clone()).await?;
         println!("Updated ip to {}", public_ip);
     }
     else {
         println!("No change");
     }
-
     Ok(())
 }
