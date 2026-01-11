@@ -2,11 +2,10 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use dotenv::dotenv;
+use anyhow::{Context, Result, bail};
 
-use std::error::Error;
 use std::env;
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Deserialize)]
 struct IpResp {
@@ -46,31 +45,39 @@ async fn get_pub_ip() -> Result<String> {
     let public_ip = client
         .get("https://api.ipify.org?format=json")
         .send()
-        .await?
+        .await
+        .context("Failed to query public ip")?
         .json::<IpResp>()
-        .await?
+        .await
+        .context("Failed to optain ip from json")?
         .ip;
     println!("Public IP: {}", public_ip);
     Ok(public_ip)
 }
 
 async fn get_zone_id(
-    record_name: &str, bearer: &str,
+    api_key: &str,
+    record_name: &str,
     client: &Client
 ) -> Result<String> {
     let url: String = format!("https://api.cloudflare.com/client/v4/zones/");
     let zone_info = client
         .get(url)
-        .header("Authorization", format!("Bearer {}", bearer))
+        .header("Authorization", format!("Bearer {}", api_key))
         .send()
-        .await?
+        .await
+        .context("Failed to connect to cloudflare")?
         .json::<ZoneInfo>()
-        .await?;
+        .await
+        .context("Failed to obtain json for ZoneInfo")?;
 
-    let mut split_domain: Vec<&str> = record_name.split('.').collect();
-    let tld = split_domain.pop().unwrap_or("");
-    let next_ld = split_domain.pop().unwrap_or("");
-    let base_domain = format!("{}.{}", next_ld, tld);
+    let split_domain: Vec<&str> = record_name.split('.').collect();
+    if split_domain.len() < 2 {
+        bail!("{} is not a valid domain format", record_name);
+    }
+    let tld = split_domain[split_domain.len()-1];
+    let domain = split_domain[split_domain.len()-2];
+    let base_domain = format!("{}.{}", domain, tld);
     if zone_info.success == true {
         println!("Getting zone_id for {}...", base_domain);
         for info in zone_info.result {
@@ -80,24 +87,26 @@ async fn get_zone_id(
             }
         }
     }
-    Err(format!("Zone ID could not be found for: {}", base_domain).into())
+    bail!("Zone ID could not be found for: {}", base_domain)
 }
 
 async fn get_cflare_ip(
+    api_key: &str,
     zone_id: &str,
     record_name: &str,
-    bearer: &str,
     client: &Client
 ) -> Result<(String, String)> {
     println!("\nGetting current ip for {} from cloudflare...", record_name);
     let url: String = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records", zone_id);
     let record_info = client
         .get(url)
-        .header("Authorization", format!("Bearer {}", bearer))
+        .header("Authorization", format!("Bearer {}", api_key))
         .send()
-        .await?
+        .await
+        .context("Failed to connect to cloudflare")?
         .json::<RecordInfo>()
-        .await?;
+        .await
+        .context("Failed to obtain json for RecordInfo")?;
     if record_info.success == true {
         for record in record_info.result {
             if record.name == record_name {
@@ -106,27 +115,28 @@ async fn get_cflare_ip(
             }
         }
     }
-    Err(format!("Failed to get the current ip for {}", record_name).into())
+    bail!("Failed to get the current ip for {}", record_name)
 }
 
 async fn update_cflare_ip(
+    api_key: &str,
     zone_id: &str,
     record_id: &str,
     new_ip: &str,
-    bearer: &str,
     client: &Client
 ) -> Result<()> {
     let url: String = format!("https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}", zone_id, record_id);
     let resp = client.patch(url)
         .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", bearer))
+        .header("Authorization", format!("Bearer {}", api_key))
         .json(&json!({
             "content": new_ip
         }))
         .send()
-        .await?;
+        .await
+        .context("Failed to patch IP")?;
     if !resp.status().is_success() {
-        return Err("Failed to update IP".into());
+        bail!("Failed to update IP");
     }
     Ok(())
 }
@@ -142,8 +152,8 @@ async fn main() -> Result<()> {
     // Get record info
     let client = Client::new();
     let public_ip: String = get_pub_ip().await?;
-    let zone_id = get_zone_id(&record_name, &api_key, &client).await?;
-    let cflare_record: (String, String) = get_cflare_ip(&zone_id, &record_name, &api_key, &client).await?;
+    let zone_id = get_zone_id(&api_key, &record_name, &client).await?;
+    let cflare_record: (String, String) = get_cflare_ip(&api_key, &zone_id, &record_name, &client).await?;
     let cflare_id: String = cflare_record.0;
     let cflare_ip: String = cflare_record.1;
     println!("Record ID: {}", cflare_id);
@@ -151,7 +161,7 @@ async fn main() -> Result<()> {
     // Check for change and update
     if public_ip != cflare_ip {
         println!("Updating ip for {}...", record_name);
-        update_cflare_ip(&zone_id, &cflare_id, &public_ip, &api_key, &client).await?;
+        update_cflare_ip(&api_key, &zone_id, &cflare_id, &public_ip, &client).await?;
         println!("Updated ip to {}", public_ip);
     }
     else {
