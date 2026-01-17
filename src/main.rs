@@ -44,7 +44,6 @@ struct Cloudflare {
 }
 
 async fn get_pub_ip(client: &Client) -> Result<String> {
-    // Get public ip
     println!("Make sure you're not using a VPN, getting public IP...");
     let public_ip = client
         .get("https://api.ipify.org?format=json")
